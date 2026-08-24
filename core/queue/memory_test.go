@@ -41,6 +41,24 @@ func TestQueue(t *testing.T) {
 	}
 }
 
+func TestMemory_CloseIntakeKeepsQueuedItemsAvailable(t *testing.T) {
+	q, stop := NewMemory[int](1)
+	defer stop()
+
+	require.NoError(t, q.Enqueue(1))
+	drainable := q.(drainQueue)
+	drainable.CloseIntake()
+
+	require.ErrorIs(t, q.Enqueue(2), ErrIntakeClosed)
+	item, err := q.Dequeue()
+	require.NoError(t, err)
+	assert.Equal(t, 1, item)
+	assert.Equal(t, int64(1), drainable.Processing())
+
+	drainable.TaskDone()
+	assert.Zero(t, drainable.Processing())
+}
+
 func TestQueue_Concurrency(t *testing.T) {
 	assert.NotPanics(t, func() {
 		nq, cancel := NewMemory[int](0)

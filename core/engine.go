@@ -1,10 +1,13 @@
 package core
 
 import (
+	"context"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -77,6 +80,7 @@ type Engine struct {
 	csrf       *middleware.CSRF
 	httpClient *http.Client
 	jobManager *JobManager
+	httpServer *http.Server
 	db.ORM
 	Localizer
 	util.Utils
@@ -401,10 +405,46 @@ func (e *Engine) ConfigureRouter(callback func(*gin.Engine)) *Engine {
 
 // Run gin.Engine loop, or panic if engine is not present.
 func (e *Engine) Run() error {
+	listener, err := net.Listen("tcp", e.HTTPServer().Addr)
+	if err != nil {
+		return err
+	}
+
+	return e.Serve(listener)
+}
+
+// Serve accepts HTTP connections on the provided listener.
+func (e *Engine) Serve(listener net.Listener) error {
 	if e.Zabbix != nil {
 		go e.Zabbix.Run()
 	}
-	return e.Router().Run(e.Config.GetHTTPConfig().Listen)
+
+	err := e.HTTPServer().Serve(listener)
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+
+	return err
+}
+
+// HTTPServer returns the HTTP server used by Run.
+func (e *Engine) HTTPServer() *http.Server {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+
+	if e.httpServer == nil {
+		e.httpServer = &http.Server{
+			Addr:    e.Config.GetHTTPConfig().Listen,
+			Handler: e.Router(),
+		}
+	}
+
+	return e.httpServer
+}
+
+// Shutdown gracefully shuts down the HTTP server used by Run.
+func (e *Engine) Shutdown(ctx context.Context) error {
+	return e.HTTPServer().Shutdown(ctx)
 }
 
 // buildSentryConfig from app configuration.

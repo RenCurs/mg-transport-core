@@ -55,6 +55,9 @@ func NewWorker[T any](
 			}
 
 			(func() {
+				if drainable, ok := q.(drainQueue); ok {
+					defer drainable.TaskDone()
+				}
 				defer func() {
 					if r := recover(); r != nil {
 						recoverFn(q.Context(), job, r)
