@@ -23,6 +23,7 @@ const (
 )
 
 // Worker consumes and processes queue items until it becomes idle or is stopped.
+// A custom Worker must call Queue.TaskDone after processing every successfully dequeued item.
 type Worker interface {
 	Run(context.Context) WorkerResult
 }
@@ -70,6 +71,7 @@ func (w *defaultWorker[T]) dequeue(ctx context.Context) (T, error) {
 }
 
 func (w *defaultWorker[T]) process(ctx context.Context, item T) {
+	defer w.config.Queue.TaskDone()
 	defer func() {
 		if recovered := recover(); recovered != nil && w.config.PanicHandler != nil {
 			w.config.PanicHandler(ctx, item, recovered)

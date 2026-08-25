@@ -416,6 +416,72 @@ func TestStore_StopCancelsProcessorWithoutWaitingForIt(t *testing.T) {
 	}
 }
 
+func TestStore_DrainWaitsForProcessingTask(t *testing.T) {
+	processing := make(chan struct{})
+	release := make(chan struct{})
+	store := newTestStore(t, NewMemory[int], func(context.Context, int) {
+		close(processing)
+		<-release
+	}, WorkerPolicy{
+		MinWorkers:    1,
+		MaxWorkers:    1,
+		JobsPerWorker: 1,
+		IdleTimeout:   time.Second,
+	})
+	t.Cleanup(store.Stop)
+
+	executor, err := store.Get(1)
+	require.NoError(t, err)
+	require.NoError(t, executor.Enqueue(1))
+	<-processing
+
+	store.CloseIntake()
+	require.ErrorIs(t, executor.Enqueue(2), ErrIntakeClosed)
+	stats := store.Stats()
+	assert.Zero(t, stats.Queued)
+	assert.Equal(t, int64(1), stats.Processing)
+
+	drained := make(chan error, 1)
+	go func() { drained <- store.Drain(context.Background()) }()
+	select {
+	case <-drained:
+		t.Fatal("drain completed while task was still processing")
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	close(release)
+	require.NoError(t, <-drained)
+}
+
+func TestStore_DrainReturnsContextError(t *testing.T) {
+	store := newTestStore(t, NewMemory[int], func(context.Context, int) {}, WorkerPolicy{
+		MinWorkers:    1,
+		MaxWorkers:    1,
+		JobsPerWorker: 1,
+		IdleTimeout:   time.Second,
+	})
+	t.Cleanup(store.Stop)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, store.Drain(ctx), context.Canceled)
+}
+
+func TestStore_CloseIntakeAppliesToNewQueueExecutors(t *testing.T) {
+	store := newTestStore(t, NewMemory[int], func(context.Context, int) {}, WorkerPolicy{
+		MinWorkers:    1,
+		MaxWorkers:    1,
+		JobsPerWorker: 1,
+		IdleTimeout:   time.Second,
+	})
+	t.Cleanup(store.Stop)
+
+	store.CloseIntake()
+	executor, err := store.Get(1)
+	require.NoError(t, err)
+	require.ErrorIs(t, executor.Enqueue(1), ErrIntakeClosed)
+}
+
 func newTestStore[T any](
 	t *testing.T,
 	constructor Constructor[T],
@@ -455,5 +521,6 @@ func (w *testWorker) Run(ctx context.Context) WorkerResult {
 		}
 
 		w.processed <- item
+		w.queue.TaskDone()
 	}
 }

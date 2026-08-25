@@ -2,11 +2,13 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"crypto/x509"
 	"database/sql"
 	"fmt"
 	"html/template"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -168,6 +170,56 @@ func (e *EngineTest) Test_Router() {
 	e.engine.TranslationsPath = testTranslationsDir
 	e.engine.Prepare()
 	assert.NotNil(e.T(), e.engine.Router())
+}
+
+func (e *EngineTest) Test_HTTPServerIsReused() {
+	e.engine.TranslationsPath = testTranslationsDir
+	e.engine.Prepare()
+
+	server := e.engine.HTTPServer()
+	assert.Same(e.T(), server, e.engine.HTTPServer())
+	assert.Equal(e.T(), ":3001", server.Addr)
+	assert.Same(e.T(), e.engine.Router(), server.Handler)
+	require.NoError(e.T(), e.engine.Shutdown(context.Background()))
+}
+
+func (e *EngineTest) Test_ShutdownWaitsForActiveHandler() {
+	e.engine.TranslationsPath = testTranslationsDir
+	e.engine.Prepare()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	e.engine.Router().GET("/slow", func(c *gin.Context) {
+		close(entered)
+		<-release
+		c.Status(http.StatusOK)
+	})
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(e.T(), err)
+	serverDone := make(chan error, 1)
+	go func() { serverDone <- e.engine.Serve(listener) }()
+	requestDone := make(chan error, 1)
+	go func() {
+		response, err := http.Get("http://" + listener.Addr().String() + "/slow")
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		requestDone <- err
+	}()
+	<-entered
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- e.engine.Shutdown(context.Background()) }()
+	select {
+	case <-shutdownDone:
+		e.T().Fatal("shutdown completed while handler was active")
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	close(release)
+	require.NoError(e.T(), <-shutdownDone)
+	require.NoError(e.T(), <-requestDone)
+	require.NoError(e.T(), <-serverDone)
 }
 
 func (e *EngineTest) Test_JobManager() {

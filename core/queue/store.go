@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
+
+const drainPollInterval = 10 * time.Millisecond
 
 // Constructor constructs a queue and returns its stop function.
 type Constructor[T any] func(id int) (Queue[T], context.CancelFunc)
@@ -19,6 +22,13 @@ type Store[T any] struct {
 	workerFactory WorkerFactory[T]
 	policy        WorkerPolicy
 	stopped       bool
+	intakeClosed  bool
+}
+
+// Stats contains current queue workload counters.
+type Stats struct {
+	Queued     int64
+	Processing int64
 }
 
 // NewStore constructs a store. It returns an error for an invalid worker policy.
@@ -104,6 +114,54 @@ func (s *Store[T]) Remove(id int) {
 	}
 }
 
+// CloseIntake prevents new items from being enqueued while allowing workers to drain existing items.
+func (s *Store[T]) CloseIntake() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.intakeClosed = true
+	for _, executor := range s.executors {
+		executor.queue.CloseIntake()
+	}
+}
+
+// Stats returns aggregated queued and currently processing task counts.
+func (s *Store[T]) Stats() Stats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var stats Stats
+	for _, executor := range s.executors {
+		stats.Queued += executor.queue.Len()
+		stats.Processing += executor.queue.Processing()
+	}
+
+	return stats
+}
+
+// Drain waits until all queued and currently processing tasks are completed.
+func (s *Store[T]) Drain(ctx context.Context) error {
+	ticker := time.NewTicker(drainPollInterval)
+	defer ticker.Stop()
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		stats := s.Stats()
+		if stats.Queued == 0 && stats.Processing == 0 {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 // Stop stops all queue executors and prevents creation of new ones.
 func (s *Store[T]) Stop() {
 	s.mu.Lock()
@@ -144,6 +202,9 @@ func (s *Store[T]) getOrCreate(id int) (*Executor[T], error) {
 		s.panicHandler,
 		s.workerFactory,
 	)
+	if s.intakeClosed {
+		executor.queue.CloseIntake()
+	}
 	s.executors[id] = executor
 
 	return executor, nil
