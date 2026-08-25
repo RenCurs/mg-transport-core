@@ -112,6 +112,55 @@ func TestStore_RemoveStopsQueue(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
+func TestStore_DrainWaitsForProcessingTask(t *testing.T) {
+	processing := make(chan struct{})
+	release := make(chan struct{})
+	store := NewStore(NewMemory[int]).WithWorkerConstructor(func(_ context.Context, _ int) Worker[int] {
+		return func(q Queue[int]) {
+			_, err := q.Dequeue()
+			if err != nil {
+				return
+			}
+			defer q.TaskDone()
+			close(processing)
+			<-release
+		}
+	})
+	q := store.Get(1)
+	require.NoError(t, q.Enqueue(1))
+	<-processing
+
+	store.CloseIntake()
+	require.ErrorIs(t, q.Enqueue(2), ErrIntakeClosed)
+	stats := store.Stats()
+	assert.Zero(t, stats.Queued)
+	assert.Equal(t, int64(1), stats.Processing)
+
+	drained := make(chan error, 1)
+	go func() { drained <- store.Drain(context.Background()) }()
+	select {
+	case <-drained:
+		t.Fatal("drain completed while task was still processing")
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	close(release)
+	require.NoError(t, <-drained)
+	store.Stop()
+}
+
+func TestStore_DrainReturnsContextError(t *testing.T) {
+	store := NewStore(NewMemory[int])
+	q := store.Get(1)
+	require.NoError(t, q.Enqueue(1))
+	store.CloseIntake()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, store.Drain(ctx), context.Canceled)
+	store.Stop()
+}
+
 func TestStore_WithNumWorkers(t *testing.T) {
 	processed := int32(0)
 	workerCount := int32(0)

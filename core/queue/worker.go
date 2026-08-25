@@ -8,6 +8,7 @@ import (
 type (
 	// Worker represents function which dequeues an item from provided queue and does something with it.
 	// Useful when NewWorker implementation isn't agile enough.
+	// A custom Worker must call Queue.TaskDone after processing every successfully dequeued item.
 	Worker[T any]       func(Queue[T])
 	contextQueue[T any] interface {
 		DequeueContext(context.Context) (T, error)
@@ -55,6 +56,7 @@ func NewWorker[T any](
 			}
 
 			(func() {
+				defer q.TaskDone()
 				defer func() {
 					if r := recover(); r != nil {
 						recoverFn(q.Context(), job, r)

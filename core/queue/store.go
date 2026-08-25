@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const drainPollInterval = 10 * time.Millisecond
+
 // Constructor constructs new queue.
 type Constructor[T any] func(id int) (Queue[T], context.CancelFunc)
 
@@ -33,6 +35,13 @@ type Store[T any] struct {
 	numWorkers        int
 	maxNumWorkers     int
 	workerConstructor WorkerConstructor[T]
+	intakeClosed      bool
+}
+
+// Stats contains current queue workload counters.
+type Stats struct {
+	Queued     int64
+	Processing int64
 }
 
 // stopFuncList stores main queue context cancellation function and workers cancellation functions.
@@ -101,6 +110,9 @@ func (s *Store[T]) Get(id int) Queue[T] {
 	}
 
 	q, stop := s.queueConstructor(id)
+	if s.intakeClosed {
+		q.CloseIntake()
+	}
 	s.m.Store(id, q)
 	s.spawnWorkers(id, stop, q)
 	s.spawnAutoScale(id, q)
@@ -115,6 +127,72 @@ func (s *Store[T]) Remove(id int) {
 
 	s.invokeStoppers(id)
 	s.m.Delete(id)
+}
+
+// CloseIntake prevents new items from being enqueued while allowing workers to drain existing items.
+func (s *Store[T]) CloseIntake() {
+	s.getLock.Lock()
+	defer s.getLock.Unlock()
+	s.intakeClosed = true
+
+	s.m.Range(func(_, value any) bool {
+		if q, ok := value.(Queue[T]); ok {
+			q.CloseIntake()
+		}
+		return true
+	})
+}
+
+// Stats returns aggregated queued and currently processing task counts.
+func (s *Store[T]) Stats() Stats {
+	var stats Stats
+	s.m.Range(func(_, value any) bool {
+		if q, ok := value.(Queue[T]); ok {
+			stats.Queued += q.Len()
+			stats.Processing += q.Processing()
+		}
+		return true
+	})
+
+	return stats
+}
+
+// Drain waits until all queued and currently processing tasks are completed.
+func (s *Store[T]) Drain(ctx context.Context) error {
+	ticker := time.NewTicker(drainPollInterval)
+	defer ticker.Stop()
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		stats := s.Stats()
+		if stats.Queued == 0 && stats.Processing == 0 {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// Stop cancels all queues and their workers.
+func (s *Store[T]) Stop() {
+	s.getLock.Lock()
+	defer s.getLock.Unlock()
+
+	s.m.Range(func(key, _ any) bool {
+		id, ok := key.(int)
+		if ok {
+			s.invokeStoppers(id)
+			s.m.Delete(id)
+		}
+		return true
+	})
 }
 
 // performAutoScale will call ScaleFunc for the queue every checkInterval until the queue context is canceled.

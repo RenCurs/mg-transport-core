@@ -3,10 +3,14 @@ package queue
 import (
 	"container/list"
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// ErrIntakeClosed is returned when an item is enqueued after queue intake has been closed.
+var ErrIntakeClosed = errors.New("queue intake is closed")
 
 // Memory represents a thread-safe FIFO in-memory queue.
 type Memory[T any] struct {
@@ -18,6 +22,8 @@ type Memory[T any] struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	lastEnqueued atomic.Value // when the last item was added
+	intakeClosed bool
+	processing   int64
 }
 
 // Queue is a queue interface.
@@ -27,6 +33,12 @@ type Queue[T any] interface {
 	Enqueue(T) error
 	// Dequeue item from queue. This method should return leftover enqueued items even if queue was canceled.
 	Dequeue() (T, error)
+	// CloseIntake prevents subsequent Enqueue calls without stopping consumers.
+	CloseIntake()
+	// Processing returns the number of dequeued tasks which have not completed yet.
+	Processing() int64
+	// TaskDone marks a dequeued task as completed.
+	TaskDone()
 }
 
 // Info is a queue information interface.
@@ -61,6 +73,9 @@ func (q *Memory[T]) Enqueue(item T) error {
 
 	if err := q.ctx.Err(); err != nil {
 		return err
+	}
+	if q.intakeClosed {
+		return ErrIntakeClosed
 	}
 
 	q.items.PushBack(item)
@@ -112,8 +127,27 @@ func (q *Memory[T]) DequeueContext(ctx context.Context) (T, error) {
 	}
 
 	item := q.items.Remove(q.items.Front()).(T)
+	atomic.AddInt64(&q.processing, 1)
 	atomic.AddInt64(&q.size, -1)
 	return item, nil
+}
+
+// CloseIntake prevents subsequent Enqueue calls without stopping consumers.
+func (q *Memory[T]) CloseIntake() {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	q.intakeClosed = true
+}
+
+// Processing returns the number of dequeued tasks which have not completed yet.
+func (q *Memory[T]) Processing() int64 {
+	return atomic.LoadInt64(&q.processing)
+}
+
+// TaskDone marks a dequeued task as completed.
+func (q *Memory[T]) TaskDone() {
+	atomic.AddInt64(&q.processing, -1)
 }
 
 // ID returns the current queue ID.
