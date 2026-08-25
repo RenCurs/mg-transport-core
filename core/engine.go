@@ -31,8 +31,9 @@ import (
 )
 
 const (
-	DefaultHTTPClientTimeout time.Duration = 30
-	AppContextKey                          = "app"
+	DefaultHTTPClientTimeout           time.Duration = 30
+	defaultHTTPServerReadHeaderTimeout               = 10 * time.Second
+	AppContextKey                                    = "app"
 )
 
 var boolTrue = true
@@ -434,8 +435,9 @@ func (e *Engine) HTTPServer() *http.Server {
 
 	if e.httpServer == nil {
 		e.httpServer = &http.Server{
-			Addr:    e.Config.GetHTTPConfig().Listen,
-			Handler: e.Router(),
+			Addr:              e.Config.GetHTTPConfig().Listen,
+			Handler:           e.Router(),
+			ReadHeaderTimeout: defaultHTTPServerReadHeaderTimeout,
 		}
 	}
 

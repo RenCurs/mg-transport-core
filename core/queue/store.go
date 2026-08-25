@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const drainPollInterval = 10 * time.Millisecond
+
 // Constructor constructs new queue.
 type Constructor[T any] func(id int) (Queue[T], context.CancelFunc)
 
@@ -161,7 +163,7 @@ func (s *Store[T]) Stats() Stats {
 
 // Drain waits until all queued and currently processing tasks are completed.
 func (s *Store[T]) Drain(ctx context.Context) error {
-	ticker := time.NewTicker(10 * time.Millisecond)
+	ticker := time.NewTicker(drainPollInterval)
 	defer ticker.Stop()
 
 	for {
