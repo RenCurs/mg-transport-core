@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+// ErrIntakeClosed is returned when an item is enqueued after queue intake has been closed.
 var ErrIntakeClosed = errors.New("queue intake is closed")
 
 // Memory represents a thread-safe FIFO in-memory queue.
@@ -32,6 +33,12 @@ type Queue[T any] interface {
 	Enqueue(T) error
 	// Dequeue item from queue. This method should return leftover enqueued items even if queue was canceled.
 	Dequeue() (T, error)
+	// CloseIntake prevents subsequent Enqueue calls without stopping consumers.
+	CloseIntake()
+	// Processing returns the number of dequeued tasks which have not completed yet.
+	Processing() int64
+	// TaskDone marks a dequeued task as completed.
+	TaskDone()
 }
 
 // Info is a queue information interface.
@@ -44,12 +51,6 @@ type Info interface {
 	LastEnqueueTime() time.Time
 	// Len returns the amount of items in the queue.
 	Len() int64
-}
-
-type drainQueue interface {
-	CloseIntake()
-	Processing() int64
-	TaskDone()
 }
 
 // NewMemory creates a new Memory queue with context.
@@ -126,8 +127,8 @@ func (q *Memory[T]) DequeueContext(ctx context.Context) (T, error) {
 	}
 
 	item := q.items.Remove(q.items.Front()).(T)
-	atomic.AddInt64(&q.size, -1)
 	atomic.AddInt64(&q.processing, 1)
+	atomic.AddInt64(&q.size, -1)
 	return item, nil
 }
 

@@ -115,11 +115,16 @@ func TestStore_RemoveStopsQueue(t *testing.T) {
 func TestStore_DrainWaitsForProcessingTask(t *testing.T) {
 	processing := make(chan struct{})
 	release := make(chan struct{})
-	store := NewStore(NewMemory[int]).WithWorkerConstructor(func(ctx context.Context, _ int) Worker[int] {
-		return NewWorker(ctx, func(_ int, _ Queue[int]) {
+	store := NewStore(NewMemory[int]).WithWorkerConstructor(func(_ context.Context, _ int) Worker[int] {
+		return func(q Queue[int]) {
+			_, err := q.Dequeue()
+			if err != nil {
+				return
+			}
+			defer q.TaskDone()
 			close(processing)
 			<-release
-		}, RecoverFuncDummy[int])
+		}
 	})
 	q := store.Get(1)
 	require.NoError(t, q.Enqueue(1))

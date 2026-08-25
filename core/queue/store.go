@@ -111,9 +111,7 @@ func (s *Store[T]) Get(id int) Queue[T] {
 
 	q, stop := s.queueConstructor(id)
 	if s.intakeClosed {
-		if drainable, ok := q.(drainQueue); ok {
-			drainable.CloseIntake()
-		}
+		q.CloseIntake()
 	}
 	s.m.Store(id, q)
 	s.spawnWorkers(id, stop, q)
@@ -138,7 +136,7 @@ func (s *Store[T]) CloseIntake() {
 	s.intakeClosed = true
 
 	s.m.Range(func(_, value any) bool {
-		if q, ok := value.(drainQueue); ok {
+		if q, ok := value.(Queue[T]); ok {
 			q.CloseIntake()
 		}
 		return true
@@ -149,10 +147,8 @@ func (s *Store[T]) CloseIntake() {
 func (s *Store[T]) Stats() Stats {
 	var stats Stats
 	s.m.Range(func(_, value any) bool {
-		if q, ok := value.(Info); ok {
+		if q, ok := value.(Queue[T]); ok {
 			stats.Queued += q.Len()
-		}
-		if q, ok := value.(drainQueue); ok {
 			stats.Processing += q.Processing()
 		}
 		return true
